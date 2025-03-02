@@ -27,6 +27,22 @@ dependencies: [
 ]
 ```
 
+#### Local Installation with SPM
+
+You can also use a local copy of the package by specifying the path to the package directory:
+
+```swift
+dependencies: [
+    .package(path: "/path/to/local/iaptic-storekit2")
+]
+```
+
+For Xcode projects, you can add a local package by:
+1. In Xcode, go to File > Add Packages...
+2. Click on "Add Local..." at the bottom of the dialog
+3. Navigate to and select the local iaptic-storekit2 directory
+4. Click "Add Package"
+
 ### Manual Installation
 
 Simply copy the `IapticValidator.swift` file into your project.
@@ -110,23 +126,22 @@ for await verificationResult in Transaction.updates {
 
 ```swift
 // For more detailed validation results
-if let jwsRepresentation = verificationResult.jwsRepresentation {
-    if let validationDetails = await validator.validateWithDetails(
-        productId: product.id,
-        jwsRepresentation: jwsRepresentation
-    ) {
-        // Access detailed validation information
-        print("Validation details: \(validationDetails)")
-        
-        // Example: Check if the subscription is active
-        if let isActive = validationDetails["is_active"] as? Bool, isActive {
-            // Handle active subscription
-        }
-        
-        // Example: Get expiration date
-        if let expiresDate = validationDetails["expires_date"] as? String {
-            // Handle expiration date
-        }
+let jwsRepresentation = verificationResult.jwsRepresentation
+if let validationDetails = await validator.validateWithDetails(
+    productId: product.id,
+    jwsRepresentation: jwsRepresentation
+) {
+    // Access detailed validation information
+    print("Validation details: \(validationDetails)")
+    
+    // Example: Check if the subscription is active
+    if let isActive = validationDetails["is_active"] as? Bool, isActive {
+        // Handle active subscription
+    }
+    
+    // Example: Get expiration date
+    if let expiresDate = validationDetails["expires_date"] as? String {
+        // Handle expiration date
     }
 }
 ```

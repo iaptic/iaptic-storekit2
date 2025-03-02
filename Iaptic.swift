@@ -43,11 +43,7 @@ public class IapticValidator {
     /// - Returns: A boolean indicating whether the validation was successful.
     @MainActor
     public func validate(productId: String, verificationResult: StoreKit.VerificationResult<StoreKit.Transaction>) async -> Bool {
-        guard let jwsRepresentation = verificationResult.jwsRepresentation else {
-            print("Error: JWS representation is nil")
-            return false
-        }
-        
+        let jwsRepresentation = verificationResult.jwsRepresentation
         return await validateWithJWS(productId: productId, jwsRepresentation: jwsRepresentation)
     }
     
@@ -60,10 +56,7 @@ public class IapticValidator {
     public func validate(productId: String, purchaseResult: Product.PurchaseResult) async -> Bool {
         switch purchaseResult {
         case .success(let verificationResult):
-            guard let jwsRepresentation = verificationResult.jwsRepresentation else {
-                print("Error: JWS representation is nil")
-                return false
-            }
+            let jwsRepresentation = verificationResult.jwsRepresentation
             return await validateWithJWS(productId: productId, jwsRepresentation: jwsRepresentation)
         default:
             return false
