@@ -1,6 +1,6 @@
-# IapticValidator for StoreKit 2
+# Iaptic for StoreKit 2
 
-The `IapticValidator` is a Swift class that simplifies the validation of StoreKit 2 in-app purchases and subscriptions with the iaptic validation service.
+The `Iaptic` is a Swift class that simplifies the validation of StoreKit 2 in-app purchases and subscriptions with the iaptic validation service.
 
 ## Features
 
@@ -45,7 +45,7 @@ For Xcode projects, you can add a local package by:
 
 ### Manual Installation
 
-Simply copy the `IapticValidator.swift` file into your project.
+Simply copy the `Iaptic.swift` file into your project.
 
 ## Usage
 
@@ -53,10 +53,10 @@ Simply copy the `IapticValidator.swift` file into your project.
 
 ```swift
 import StoreKit
-import IapticValidator // If using SPM
+import Iaptic // If using SPM
 
 // Initialize the validator with your iaptic credentials
-let validator = IapticValidator(
+let iaptic = Iaptic(
     appName: "your-app-name",
     publicKey: "your-public-key"
 )
@@ -72,7 +72,7 @@ func buyProduct(_ product: Product) async {
         switch result {
         case .success(let verificationResult):
             // Validate with iaptic
-            let isValid = await validator.validate(productId: product.id, purchaseResult: result)
+            let isValid = await iaptic.validate(productId: product.id, purchaseResult: result)
             
             if isValid {
                 print("Purchase validated successfully with iaptic")
@@ -110,7 +110,7 @@ func buyProduct(_ product: Product) async {
 // When handling transaction updates
 for await verificationResult in Transaction.updates {
     if case .verified(let transaction) = verificationResult {
-        let isValid = await validator.validate(
+        let isValid = await iaptic.validate(
             productId: transaction.productID,
             verificationResult: verificationResult
         )
@@ -127,7 +127,7 @@ for await verificationResult in Transaction.updates {
 ```swift
 // For more detailed validation results
 let jwsRepresentation = verificationResult.jwsRepresentation
-if let validationDetails = await validator.validateWithDetails(
+if let validationDetails = await iaptic.validateWithDetails(
     productId: product.id,
     jwsRepresentation: jwsRepresentation
 ) {
@@ -135,7 +135,7 @@ if let validationDetails = await validator.validateWithDetails(
     print("Validation details: \(validationDetails)")
     
     // Example: Check if the subscription is active
-    if let isActive = validationDetails["is_active"] as? Bool, isActive {
+    if let isExpired = validationDetails["is_expired"] as? Bool, isActive {
         // Handle active subscription
     }
     
@@ -161,4 +161,4 @@ For support or questions about the iaptic validation service, please contact sup
 
 ## License
 
-The IapticValidator is available under the MIT license. See the LICENSE file for more info. 
+The Iaptic package is available under the MIT license. See the LICENSE file for more info. 
