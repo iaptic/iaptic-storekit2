@@ -9,6 +9,9 @@ The `Iaptic` is a Swift class that simplifies the validation of StoreKit 2 in-ap
 - Detailed validation responses with `ValidationResult` class
 - Support for application username and device metadata
 - Comprehensive error handling
+- Smart caching to improve performance
+- Thread-safe implementation
+- Automatic retry for network failures
 
 ## Requirements
 
@@ -178,6 +181,43 @@ if validationResult.isValid {
 }
 ```
 
+### Performance Optimization
+
+The Iaptic validator includes built-in optimizations to improve performance:
+
+- Automatically caches recent validation results to reduce network requests
+- Prevents duplicate validations of the same transaction
+- Ensures thread safety for use in concurrent environments
+
+### Network Reliability
+
+The validator automatically handles network issues:
+
+- Automatically retries failed network requests up to 10 times
+- Uses exponential backoff between retry attempts (5s, 10s, 20s, 40s, ..., 5120s)
+
+### Retrieving Verified Purchases
+
+Access the most recent validated purchases as returned by the server.
+
+```swift
+// Get verified purchases from the latest validation
+if let purchases = iaptic.getVerifiedPurchases() {
+    for purchase in purchases {
+        // Process each purchase
+        print("Product: \(purchase.id)")
+        if let expiryDate = purchase.expiryDate {
+            print("Expires: \(expiryDate)")
+        }
+    }
+} else {
+    // No verified purchases available
+    print("No verified purchases found")
+}
+```
+
+Those "verified purchases" are in iaptic's unified purchase format: https://www.iaptic.com/documentation/api/v3/#api-Types-ValidatorPurchase
+
 ## Error Handling
 
 The validator includes comprehensive error handling:
@@ -193,4 +233,4 @@ For support or questions about the iaptic validation service, please contact sup
 
 ## License
 
-The Iaptic package is available under the MIT license. See the LICENSE file for more info. 
+The Iaptic package is available under the MIT license. See the LICENSE file for more info.

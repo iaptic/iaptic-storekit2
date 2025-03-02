@@ -345,13 +345,17 @@ public class Iaptic {
     ///   - applicationUsername: The username associated with the purchase.
     ///   - transactionId: The ID of the transaction being validated.
     ///   - originalTransactionId: The original transaction ID, if available.
+    ///   - retryCount: Number of retry attempts for network failures. Defaults to 3.
+    ///   - retryDelay: Delay in seconds between retry attempts. Defaults to 1 second.
     /// - Returns: A validation result containing details about the validation.
     public func validateWithJWS(
         productId: String? = nil,
         jwsRepresentation: String,
         applicationUsername: String = "",
         transactionId: String = UUID().uuidString,
-        originalTransactionId: String? = nil
+        originalTransactionId: String? = nil,
+        retryCount: Int = 8,
+        retryDelay: TimeInterval = 5.0
     ) async -> ValidationResult {
         // Check if we already have a request for this transaction
         if let existingRequest = findExistingRequest(for: transactionId) {
@@ -405,125 +409,167 @@ public class Iaptic {
             ]
         ]
         
+        // Prepare the JSON data and URL request outside the retry loop
+        let jsonData: Data
         do {
-            // Convert the request body to JSON data
-            let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
-            
-            // Create the request
-            var urlRequest = URLRequest(url: url)
-            urlRequest.httpMethod = "POST"
-            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            
-            // Add iaptic authorization header
-            let authString = "\(appName):\(publicKey)"
-            if let authData = authString.data(using: .utf8) {
-                let base64Auth = authData.base64EncodedString()
-                urlRequest.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
-            }
-            
-            urlRequest.httpBody = jsonData
-            
-            // Make the request
-            let (data, response) = try await URLSession.shared.data(for: urlRequest)
-            
-            // Handle the response
-            if let httpResponse = response as? HTTPURLResponse {
-                if httpResponse.statusCode == 200 {
-                    // Parse and handle successful response
-                    if let responseJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let ok = responseJSON["ok"] as? Bool, ok {
-                            // Successful validation
-                            print("Validation successful: \(responseJSON)")
-                            
-                            // Parse the response data
-                            var purchases: [ValidationResult.Purchase]? = nil
-                            var ineligibleForIntroPrice: [String]? = nil
-                            var validationDate: Date? = nil
-                            var warning: String? = nil
-                            
-                            if let dataObj = responseJSON["data"] as? [String: Any] {
-                                // Parse purchases collection
-                                if let collection = dataObj["collection"] as? [[String: Any]] {
-                                    purchases = collection.compactMap { purchaseData in
-                                        guard let id = purchaseData["id"] as? String else { return nil }
-                                        
-                                        // Parse dates from timestamps
-                                        let purchaseDate = (purchaseData["purchaseDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
-                                        let expiryDate = (purchaseData["expiryDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
-                                        let renewalIntentChangeDate = (purchaseData["renewalIntentChangeDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
-                                        let lastRenewalDate = (purchaseData["lastRenewalDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
-                                        
-                                        return ValidationResult.Purchase(
-                                            id: id,
-                                            purchaseDate: purchaseDate,
-                                            expiryDate: expiryDate,
-                                            isExpired: purchaseData["isExpired"] as? Bool,
-                                            renewalIntent: purchaseData["renewalIntent"] as? String,
-                                            renewalIntentChangeDate: renewalIntentChangeDate,
-                                            cancelationReason: purchaseData["cancelationReason"] as? String,
-                                            isBillingRetryPeriod: purchaseData["isBillingRetryPeriod"] as? Bool,
-                                            isTrialPeriod: purchaseData["isTrialPeriod"] as? Bool,
-                                            isIntroPeriod: purchaseData["isIntroPeriod"] as? Bool,
-                                            isAcknowledged: purchaseData["isAcknowledged"] as? Bool,
-                                            discountId: purchaseData["discountId"] as? String,
-                                            priceConsentStatus: purchaseData["priceConsentStatus"] as? String,
-                                            lastRenewalDate: lastRenewalDate
-                                        )
-                                    }
-                                }
-                                
-                                // Parse ineligible for intro price products
-                                ineligibleForIntroPrice = dataObj["ineligible_for_intro_price"] as? [String]
-                                
-                                // Parse warning
-                                warning = dataObj["warning"] as? String
-                                
-                                // Parse validation date
-                                if let dateString = dataObj["date"] as? String {
-                                    let formatter = ISO8601DateFormatter()
-                                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                                    validationDate = formatter.date(from: dateString)
-                                }
-                            }
-                            
-                            let result = ValidationResult(
-                                isValid: true,
-                                purchases: purchases,
-                                ineligibleForIntroPrice: ineligibleForIntroPrice,
-                                productId: productId,
-                                validationDate: validationDate,
-                                warning: warning
-                            )
-                            
-                            request.complete(with: result)
-                            return result
-                        } else {
-                            // Failed validation
-                            print("Validation failed: \(responseJSON)")
-                            let errorCode = responseJSON["code"] as? String
-                            let errorMessage = responseJSON["message"] as? String
-                            let result = ValidationResult(errorCode: errorCode, errorMessage: errorMessage)
-                            
-                            request.complete(with: result)
-                            return result
-                        }
-                    }
-                } else {
-                    print("HTTP Error: \(httpResponse.statusCode)")
-                    let result = ValidationResult(errorCode: "HTTPError", errorMessage: "HTTP Error: \(httpResponse.statusCode)")
-                    request.complete(with: result)
-                    return result
-                }
-            }
-            
-            let result = ValidationResult(errorCode: "UnknownError", errorMessage: "Unknown error occurred during validation")
-            request.complete(with: result)
-            return result
+            jsonData = try JSONSerialization.data(withJSONObject: requestBody)
         } catch {
-            print("Error validating with iaptic: \(error)")
-            let result = ValidationResult(errorCode: "RequestError", errorMessage: error.localizedDescription)
+            print("Error serializing request body: \(error)")
+            let result = ValidationResult(errorCode: "SerializationError", errorMessage: error.localizedDescription)
             request.complete(with: result)
             return result
         }
+        
+        // Create the request
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Add iaptic authorization header
+        let authString = "\(appName):\(publicKey)"
+        if let authData = authString.data(using: .utf8) {
+            let base64Auth = authData.base64EncodedString()
+            urlRequest.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
+        }
+        
+        urlRequest.httpBody = jsonData
+        
+        // Implement retry mechanism for network failures
+        var currentRetry = 0
+        var lastError: Error? = nil
+        
+        while currentRetry <= retryCount {
+            do {
+                // Make the request
+                let (data, response) = try await URLSession.shared.data(for: urlRequest)
+                
+                // Handle the response
+                if let httpResponse = response as? HTTPURLResponse {
+                    if httpResponse.statusCode == 200 {
+                        // Parse and handle successful response
+                        if let responseJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            if let ok = responseJSON["ok"] as? Bool, ok {
+                                // Successful validation
+                                print("Validation successful: \(responseJSON)")
+                                
+                                // Parse the response data
+                                var purchases: [ValidationResult.Purchase]? = nil
+                                var ineligibleForIntroPrice: [String]? = nil
+                                var validationDate: Date? = nil
+                                var warning: String? = nil
+                                
+                                if let dataObj = responseJSON["data"] as? [String: Any] {
+                                    // Parse purchases collection
+                                    if let collection = dataObj["collection"] as? [[String: Any]] {
+                                        purchases = collection.compactMap { purchaseData in
+                                            guard let id = purchaseData["id"] as? String else { return nil }
+                                            
+                                            // Parse dates from timestamps
+                                            let purchaseDate = (purchaseData["purchaseDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
+                                            let expiryDate = (purchaseData["expiryDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
+                                            let renewalIntentChangeDate = (purchaseData["renewalIntentChangeDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
+                                            let lastRenewalDate = (purchaseData["lastRenewalDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0 / 1000) }
+                                            
+                                            return ValidationResult.Purchase(
+                                                id: id,
+                                                purchaseDate: purchaseDate,
+                                                expiryDate: expiryDate,
+                                                isExpired: purchaseData["isExpired"] as? Bool,
+                                                renewalIntent: purchaseData["renewalIntent"] as? String,
+                                                renewalIntentChangeDate: renewalIntentChangeDate,
+                                                cancelationReason: purchaseData["cancelationReason"] as? String,
+                                                isBillingRetryPeriod: purchaseData["isBillingRetryPeriod"] as? Bool,
+                                                isTrialPeriod: purchaseData["isTrialPeriod"] as? Bool,
+                                                isIntroPeriod: purchaseData["isIntroPeriod"] as? Bool,
+                                                isAcknowledged: purchaseData["isAcknowledged"] as? Bool,
+                                                discountId: purchaseData["discountId"] as? String,
+                                                priceConsentStatus: purchaseData["priceConsentStatus"] as? String,
+                                                lastRenewalDate: lastRenewalDate
+                                            )
+                                        }
+                                    }
+                                    
+                                    // Parse ineligible for intro price products
+                                    ineligibleForIntroPrice = dataObj["ineligible_for_intro_price"] as? [String]
+                                    
+                                    // Parse warning
+                                    warning = dataObj["warning"] as? String
+                                    
+                                    // Parse validation date
+                                    if let dateString = dataObj["date"] as? String {
+                                        let formatter = ISO8601DateFormatter()
+                                        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                                        validationDate = formatter.date(from: dateString)
+                                    }
+                                }
+                                
+                                let result = ValidationResult(
+                                    isValid: true,
+                                    purchases: purchases,
+                                    ineligibleForIntroPrice: ineligibleForIntroPrice,
+                                    productId: productId,
+                                    validationDate: validationDate,
+                                    warning: warning
+                                )
+                                
+                                request.complete(with: result)
+                                return result
+                            } else {
+                                // Failed validation (not a network error, so don't retry)
+                                print("Validation failed: \(responseJSON)")
+                                let errorCode = responseJSON["code"] as? String
+                                let errorMessage = responseJSON["message"] as? String
+                                let result = ValidationResult(errorCode: errorCode, errorMessage: errorMessage)
+                                
+                                request.complete(with: result)
+                                return result
+                            }
+                        }
+                    } else if httpResponse.statusCode >= 500 && currentRetry < retryCount {
+                        // Server error, retry if we haven't reached the maximum retry count
+                        print("Server error (HTTP \(httpResponse.statusCode)), retrying (\(currentRetry + 1)/\(retryCount))...")
+                        currentRetry += 1
+                        // Wait before retrying
+                        let backoffDelay = retryDelay * pow(2.0, Double(currentRetry - 1))
+                        try await Task.sleep(nanoseconds: UInt64(backoffDelay * 1_000_000_000))
+                        continue
+                    } else {
+                        // Client error or we've reached max retries for server error
+                        print("HTTP Error: \(httpResponse.statusCode)")
+                        let result = ValidationResult(errorCode: "HTTPError", errorMessage: "HTTP Error: \(httpResponse.statusCode)")
+                        request.complete(with: result)
+                        return result
+                    }
+                }
+                
+                // If we get here, something unexpected happened with the response
+                let result = ValidationResult(errorCode: "UnknownError", errorMessage: "Unknown error occurred during validation")
+                request.complete(with: result)
+                return result
+                
+            } catch {
+                // Network error or other exception
+                lastError = error
+                
+                if currentRetry < retryCount {
+                    // Log and retry
+                    print("Network error: \(error.localizedDescription), retrying (\(currentRetry + 1)/\(retryCount))...")
+                    currentRetry += 1
+                    
+                    // Use exponential backoff for retries (1s, 2s, 4s, etc.)
+                    let backoffDelay = retryDelay * pow(2.0, Double(currentRetry - 1))
+                    try? await Task.sleep(nanoseconds: UInt64(backoffDelay * 1_000_000_000))
+                } else {
+                    // We've exhausted our retries
+                    break
+                }
+            }
+        }
+        
+        // If we get here, we've exhausted our retries with errors
+        print("Error validating with iaptic after \(retryCount) retries: \(lastError?.localizedDescription ?? "Unknown error")")
+        let result = ValidationResult(errorCode: "RequestError", errorMessage: lastError?.localizedDescription ?? "Network request failed after multiple attempts")
+        request.complete(with: result)
+        return result
     }
 } 
