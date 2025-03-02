@@ -6,7 +6,8 @@ The `Iaptic` is a Swift class that simplifies the validation of StoreKit 2 in-ap
 
 - Easy integration with StoreKit 2
 - Support for validating transactions and purchase results
-- Detailed validation responses
+- Detailed validation responses with `ValidationResult` class
+- Support for application username and device metadata
 - Comprehensive error handling
 
 ## Requirements
@@ -67,19 +68,28 @@ let iaptic = Iaptic(
 ```swift
 func buyProduct(_ product: Product) async {
     do {
-        let result = try await product.purchase()
+        let result = try await product.purchase(options: [.appAccountToken(UUID())])
         
         switch result {
         case .success(let verificationResult):
             // Validate with iaptic
-            let isValid = await iaptic.validate(productId: product.id, purchaseResult: result)
+            let validationResult = await iaptic.validate(
+                productId: product.id, 
+                purchaseResult: result,
+                applicationUsername: "user123" // Optional
+            )
             
-            if isValid {
+            if validationResult.isValid {
                 print("Purchase validated successfully with iaptic")
                 // Grant temporary entitlements to the user,
                 // until iaptic informs your server of the purchase with a webhook call.
+                
+                // Check if subscription is active
+                if validationResult.isActive {
+                    // Handle active subscription
+                }
             } else {
-                print("Purchase validation failed with iaptic")
+                print("Purchase validation failed with iaptic: \(validationResult.errorMessage ?? "Unknown error")")
                 // Handle validation failure
             }
             
@@ -110,38 +120,60 @@ func buyProduct(_ product: Product) async {
 // When handling transaction updates
 for await verificationResult in Transaction.updates {
     if case .verified(let transaction) = verificationResult {
-        let isValid = await iaptic.validate(
+        let validationResult = await iaptic.validate(
             productId: transaction.productID,
-            verificationResult: verificationResult
+            verificationResult: verificationResult,
+            applicationUsername: "user123" // Optional
         )
         
-        if isValid {
+        if validationResult.isValid && validationResult.isActive {
             // Grant entitlements to the user
         }
     }
 }
 ```
 
-### Getting Detailed Validation Results
+### Working with ValidationResult
 
 ```swift
-// For more detailed validation results
-let jwsRepresentation = verificationResult.jwsRepresentation
-if let validationDetails = await iaptic.validateWithDetails(
+// Access detailed validation information
+let validationResult = await iaptic.validate(
     productId: product.id,
-    jwsRepresentation: jwsRepresentation
-) {
-    // Access detailed validation information
-    print("Validation details: \(validationDetails)")
-    
-    // Example: Check if the subscription is active
-    if let isExpired = validationDetails["is_expired"] as? Bool, isActive {
+    purchaseResult: result
+)
+
+// Check if validation was successful
+if validationResult.isValid {
+    // Check if subscription is active
+    if validationResult.isActive {
         // Handle active subscription
     }
     
-    // Example: Get expiration date
-    if let expiresDate = validationDetails["expires_date"] as? String {
-        // Handle expiration date
+    // Check if subscription is expired
+    if validationResult.isExpired {
+        // Handle expired subscription
+    }
+    
+    // Access purchase details
+    if let purchases = validationResult.purchases {
+        for purchase in purchases {
+            // Access purchase information
+            print("Product ID: \(purchase.id)")
+            
+            if let expiryDate = purchase.expiryDate {
+                print("Expires on: \(expiryDate)")
+            }
+            
+            if let isTrialPeriod = purchase.isTrialPeriod, isTrialPeriod {
+                print("User is in trial period")
+            }
+        }
+    }
+} else {
+    // Handle validation error
+    if let errorCode = validationResult.errorCode, 
+       let errorMessage = validationResult.errorMessage {
+        print("Validation failed: \(errorCode) - \(errorMessage)")
     }
 }
 ```

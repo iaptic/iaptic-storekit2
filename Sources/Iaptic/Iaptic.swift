@@ -114,6 +114,62 @@ public class ValidationResult {
     }
 }
 
+/// Represents the state of an iaptic validation request
+public enum IapticRequestState: String {
+    case inProgress = "in_progress"
+    case completed = "completed"
+    case failed = "failed"
+}
+
+/// Represents a request made to the iaptic validation service
+public class IapticRequest {
+    /// The date when the request started
+    public let startDate: Date
+    
+    /// The date when the request completed or failed
+    public var endDate: Date?
+    
+    /// The current state of the request
+    public var state: IapticRequestState
+    
+    /// The product ID being validated
+    public let productId: String?
+    
+    /// The transaction ID being validated
+    public let transactionId: String
+    
+    /// The original transaction ID, if available
+    public let originalTransactionId: String?
+    
+    /// The result of the validation, available when state is completed
+    public var validationResult: ValidationResult?
+    
+    /// Continuations waiting for this request to complete
+    internal var continuations: [CheckedContinuation<ValidationResult, Never>] = []
+    
+    /// Initializes a new iaptic request
+    internal init(productId: String?, transactionId: String, originalTransactionId: String? = nil) {
+        self.startDate = Date()
+        self.state = .inProgress
+        self.productId = productId
+        self.transactionId = transactionId
+        self.originalTransactionId = originalTransactionId
+    }
+    
+    /// Completes the request with a validation result
+    internal func complete(with result: ValidationResult) {
+        self.endDate = Date()
+        self.validationResult = result
+        self.state = result.isValid ? .completed : .failed
+        
+        // Resume all waiting continuations with the result
+        for continuation in continuations {
+            continuation.resume(returning: result)
+        }
+        continuations.removeAll()
+    }
+}
+
 /// A validator for StoreKit 2 transactions using the iaptic validation service.
 /// This class provides methods to validate in-app purchases and subscriptions with iaptic.
 @available(iOS 15.0, macOS 12.0, watchOS 8.0, tvOS 15.0, *)
@@ -132,8 +188,11 @@ public class Iaptic {
     /// The public key for authentication with iaptic.
     private let publicKey: String
     
-    /// The bundle ID of the app.
-    private let bundleId: String
+    /// The list of requests made to the iaptic service
+    private var requests: [IapticRequest] = []
+    
+    /// Lock for thread-safe access to requests
+    private let requestsLock = NSLock()
     
     // MARK: - Initialization
     
@@ -145,13 +204,67 @@ public class Iaptic {
     public init(
         baseURL: String = "https://validator.iaptic.com",
         appName: String,
-        publicKey: String,
-        bundleId: String
+        publicKey: String
     ) {
         self.baseURL = baseURL
         self.appName = appName
         self.publicKey = publicKey
-        self.bundleId = bundleId
+    }
+    
+    // MARK: - Request Management
+    
+    /// Finds an existing request for the given transaction ID
+    /// - Parameter transactionId: The transaction ID to look for
+    /// - Returns: An existing request if found, nil otherwise
+    private func findExistingRequest(for transactionId: String) -> IapticRequest? {
+        requestsLock.lock()
+        defer { requestsLock.unlock() }
+        
+        return requests.first { $0.transactionId == transactionId }
+    }
+    
+    /// Adds a new request to the list
+    /// - Parameter request: The request to add
+    private func addRequest(_ request: IapticRequest) {
+        requestsLock.lock()
+        defer { requestsLock.unlock() }
+        
+        requests.append(request)
+    }
+    
+    /// Gets all completed requests
+    /// - Returns: Array of completed requests
+    private func getCompletedRequests() -> [IapticRequest] {
+        requestsLock.lock()
+        defer { requestsLock.unlock() }
+        
+        return requests.filter { $0.state == .completed }
+    }
+    
+    /// Gets the most recent completed request
+    /// - Returns: The most recent completed request, if any
+    private func getMostRecentCompletedRequest() -> IapticRequest? {
+        requestsLock.lock()
+        defer { requestsLock.unlock() }
+        
+        return requests
+            .filter { $0.state == .completed }
+            .sorted { $0.endDate ?? Date.distantPast > $1.endDate ?? Date.distantPast }
+            .first
+    }
+    
+    // MARK: - Public Methods
+    
+    /// Gets all verified purchases from the most recent completed request
+    /// - Returns: Array of verified purchases, or nil if no completed requests exist
+    public func getVerifiedPurchases() -> [ValidationResult.Purchase]? {
+        guard let mostRecentRequest = getMostRecentCompletedRequest(),
+              let result = mostRecentRequest.validationResult,
+              result.isValid else {
+            return nil
+        }
+        
+        return result.purchases
     }
     
     // MARK: - Validation Methods
@@ -165,7 +278,27 @@ public class Iaptic {
     @MainActor
     public func validate(productId: String, verificationResult: StoreKit.VerificationResult<StoreKit.Transaction>, applicationUsername: String = "") async -> ValidationResult {
         let jwsRepresentation = verificationResult.jwsRepresentation
-        return await validateWithJWS(productId: productId, jwsRepresentation: jwsRepresentation, applicationUsername: applicationUsername)
+        
+        // Extract transaction ID from the verification result
+        var transactionId = ""
+        var originalTransactionId: String? = nil
+        
+        switch verificationResult {
+        case .verified(let transaction):
+            transactionId = transaction.id.description
+            originalTransactionId = transaction.originalID.description
+        case .unverified:
+            // For unverified transactions, we'll still validate with iaptic but can't track by ID
+            transactionId = UUID().uuidString
+        }
+        
+        return await validateWithJWS(
+            productId: productId,
+            jwsRepresentation: jwsRepresentation,
+            applicationUsername: applicationUsername,
+            transactionId: transactionId,
+            originalTransactionId: originalTransactionId
+        )
     }
     
     /// Validates a StoreKit 2 purchase result with iaptic.
@@ -173,13 +306,33 @@ public class Iaptic {
     ///   - productId: The product identifier.
     ///   - purchaseResult: The purchase result from StoreKit 2.
     ///   - applicationUsername: The username associated with the purchase.
-    /// - Returns: A validation result containing details about the validation.
+    /// - Returns: A validtion result containing details about the validation.
     @MainActor
     public func validate(productId: String, purchaseResult: Product.PurchaseResult, applicationUsername: String = "") async -> ValidationResult {
         switch purchaseResult {
         case .success(let verificationResult):
             let jwsRepresentation = verificationResult.jwsRepresentation
-            return await validateWithJWS(productId: productId, jwsRepresentation: jwsRepresentation, applicationUsername: applicationUsername)
+            
+            // Extract transaction ID from the verification result
+            var transactionId = ""
+            var originalTransactionId: String? = nil
+            
+            switch verificationResult {
+            case .verified(let transaction):
+                transactionId = transaction.id.description
+                originalTransactionId = transaction.originalID.description
+            case .unverified:
+                // For unverified transactions, we'll still validate with iaptic but can't track by ID
+                transactionId = UUID().uuidString
+            }
+            
+            return await validateWithJWS(
+                productId: productId,
+                jwsRepresentation: jwsRepresentation,
+                applicationUsername: applicationUsername,
+                transactionId: transactionId,
+                originalTransactionId: originalTransactionId
+            )
         default:
             return ValidationResult(errorCode: "PurchaseFailed", errorMessage: "The purchase was not successful")
         }
@@ -190,20 +343,57 @@ public class Iaptic {
     ///   - productId: The product identifier.
     ///   - jwsRepresentation: The JWS representation of the transaction.
     ///   - applicationUsername: The username associated with the purchase.
+    ///   - transactionId: The ID of the transaction being validated.
+    ///   - originalTransactionId: The original transaction ID, if available.
     /// - Returns: A validation result containing details about the validation.
-    public func validateWithJWS(productId: String, jwsRepresentation: String, applicationUsername: String = "") async -> ValidationResult {
+    public func validateWithJWS(
+        productId: String? = nil,
+        jwsRepresentation: String,
+        applicationUsername: String = "",
+        transactionId: String = UUID().uuidString,
+        originalTransactionId: String? = nil
+    ) async -> ValidationResult {
+        // Check if we already have a request for this transaction
+        if let existingRequest = findExistingRequest(for: transactionId) {
+            switch existingRequest.state {
+            case .completed, .failed:
+                // If we have a recent completed or failed request, return its result
+                if let result = existingRequest.validationResult,
+                   existingRequest.endDate != nil,
+                   Date().timeIntervalSince(existingRequest.endDate!) < 300 { // 5 minutes cache
+                    return result
+                }
+                // Otherwise, proceed with a new validation
+                
+            case .inProgress:
+                // If a request is in progress, wait for it to complete
+                return await withCheckedContinuation { continuation in
+                    existingRequest.continuations.append(continuation)
+                }
+            }
+        }
+        
+        // Create a new request
+        let request = IapticRequest(
+            productId: productId,
+            transactionId: transactionId,
+            originalTransactionId: originalTransactionId
+        )
+        addRequest(request)
+        
         // Create the URL for the iaptic API
         guard let url = URL(string: "\(baseURL)/v1/validate") else {
-            print("Invalid URL")
-            return ValidationResult(errorCode: "InvalidURL", errorMessage: "Invalid API URL")
+            let result = ValidationResult(errorCode: "InvalidURL", errorMessage: "Invalid API URL")
+            request.complete(with: result)
+            return result
         }
         
         // Create the request body according to iaptic documentation
         let requestBody: [String: Any] = [
-            "id": self.bundleId,
+            "id": Bundle.main.bundleIdentifier ?? "",
             "type": "application",
             "transaction": [
-                "id": productId,
+                "id": productId ?? Bundle.main.bundleIdentifier ?? "",
                 "type": "apple-sk2",
                 "jwsRepresentation": jwsRepresentation
             ],
@@ -220,21 +410,21 @@ public class Iaptic {
             let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
             
             // Create the request
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "POST"
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
             
             // Add iaptic authorization header
             let authString = "\(appName):\(publicKey)"
             if let authData = authString.data(using: .utf8) {
                 let base64Auth = authData.base64EncodedString()
-                request.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
+                urlRequest.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
             }
             
-            request.httpBody = jsonData
+            urlRequest.httpBody = jsonData
             
             // Make the request
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: urlRequest)
             
             // Handle the response
             if let httpResponse = response as? HTTPURLResponse {
@@ -296,7 +486,7 @@ public class Iaptic {
                                 }
                             }
                             
-                            return ValidationResult(
+                            let result = ValidationResult(
                                 isValid: true,
                                 purchases: purchases,
                                 ineligibleForIntroPrice: ineligibleForIntroPrice,
@@ -304,24 +494,36 @@ public class Iaptic {
                                 validationDate: validationDate,
                                 warning: warning
                             )
+                            
+                            request.complete(with: result)
+                            return result
                         } else {
                             // Failed validation
                             print("Validation failed: \(responseJSON)")
                             let errorCode = responseJSON["code"] as? String
                             let errorMessage = responseJSON["message"] as? String
-                            return ValidationResult(errorCode: errorCode, errorMessage: errorMessage)
+                            let result = ValidationResult(errorCode: errorCode, errorMessage: errorMessage)
+                            
+                            request.complete(with: result)
+                            return result
                         }
                     }
                 } else {
                     print("HTTP Error: \(httpResponse.statusCode)")
-                    return ValidationResult(errorCode: "HTTPError", errorMessage: "HTTP Error: \(httpResponse.statusCode)")
+                    let result = ValidationResult(errorCode: "HTTPError", errorMessage: "HTTP Error: \(httpResponse.statusCode)")
+                    request.complete(with: result)
+                    return result
                 }
             }
             
-            return ValidationResult(errorCode: "UnknownError", errorMessage: "Unknown error occurred during validation")
+            let result = ValidationResult(errorCode: "UnknownError", errorMessage: "Unknown error occurred during validation")
+            request.complete(with: result)
+            return result
         } catch {
             print("Error validating with iaptic: \(error)")
-            return ValidationResult(errorCode: "RequestError", errorMessage: error.localizedDescription)
+            let result = ValidationResult(errorCode: "RequestError", errorMessage: error.localizedDescription)
+            request.complete(with: result)
+            return result
         }
     }
 } 
