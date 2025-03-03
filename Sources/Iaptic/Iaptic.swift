@@ -194,6 +194,16 @@ public class Iaptic {
     /// Lock for thread-safe access to requests
     private let requestsLock = NSLock()
     
+    /// Whether to print verbose logs
+    private let verbose: Bool
+    
+    /// Prints a message only if verbose logging is enabled
+    private func log(_ message: String) {
+        if verbose {
+            print("[Iaptic] \(message)")
+        }
+    }
+    
     // MARK: - Initialization
     
     /// Initializes a new iaptic validator.
@@ -201,14 +211,17 @@ public class Iaptic {
     ///   - baseURL: The base URL for the iaptic API. Defaults to the production URL.
     ///   - appName: The app name registered with iaptic.
     ///   - publicKey: The public key for authentication with iaptic.
+    ///   - verbose: Whether to print verbose logs. Defaults to false.
     public init(
         baseURL: String = "https://validator.iaptic.com",
         appName: String,
-        publicKey: String
+        publicKey: String,
+        verbose: Bool = false
     ) {
         self.baseURL = baseURL
         self.appName = appName
         self.publicKey = publicKey
+        self.verbose = verbose
     }
     
     // MARK: - Request Management
@@ -365,12 +378,14 @@ public class Iaptic {
                 if let result = existingRequest.validationResult,
                    existingRequest.endDate != nil,
                    Date().timeIntervalSince(existingRequest.endDate!) < 300 { // 5 minutes cache
+                    log("Using cached validation result for transaction \(transactionId)")
                     return result
                 }
                 // Otherwise, proceed with a new validation
                 
             case .inProgress:
                 // If a request is in progress, wait for it to complete
+                log("Waiting for in-progress validation of transaction \(transactionId)")
                 return await withCheckedContinuation { continuation in
                     existingRequest.continuations.append(continuation)
                 }
@@ -384,6 +399,7 @@ public class Iaptic {
             originalTransactionId: originalTransactionId
         )
         addRequest(request)
+        log("Starting validation for transaction \(transactionId)")
         
         // Create the URL for the iaptic API
         guard let url = URL(string: "\(baseURL)/v1/validate") else {
@@ -450,7 +466,7 @@ public class Iaptic {
                         if let responseJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                             if let ok = responseJSON["ok"] as? Bool, ok {
                                 // Successful validation
-                                print("Validation successful: \(responseJSON)")
+                                log("Validation successful for transaction \(transactionId)")
                                 
                                 // Parse the response data
                                 var purchases: [ValidationResult.Purchase]? = nil
@@ -516,7 +532,7 @@ public class Iaptic {
                                 return result
                             } else {
                                 // Failed validation (not a network error, so don't retry)
-                                print("Validation failed: \(responseJSON)")
+                                print("[Iaptic] Validation failed: \(responseJSON)") // Always print validation failures
                                 let errorCode = responseJSON["code"] as? String
                                 let errorMessage = responseJSON["message"] as? String
                                 let result = ValidationResult(errorCode: errorCode, errorMessage: errorMessage)
@@ -527,7 +543,7 @@ public class Iaptic {
                         }
                     } else if httpResponse.statusCode >= 500 && currentRetry < retryCount {
                         // Server error, retry if we haven't reached the maximum retry count
-                        print("Server error (HTTP \(httpResponse.statusCode)), retrying (\(currentRetry + 1)/\(retryCount))...")
+                        print("[Iaptic] Server error (HTTP \(httpResponse.statusCode)), retrying (\(currentRetry + 1)/\(retryCount))...") // Always print server errors
                         currentRetry += 1
                         // Wait before retrying
                         let backoffDelay = retryDelay * pow(2.0, Double(currentRetry - 1))
@@ -535,7 +551,7 @@ public class Iaptic {
                         continue
                     } else {
                         // Client error or we've reached max retries for server error
-                        print("HTTP Error: \(httpResponse.statusCode)")
+                        print("[Iaptic] HTTP Error: \(httpResponse.statusCode)") // Always print HTTP errors
                         let result = ValidationResult(errorCode: "HTTPError", errorMessage: "HTTP Error: \(httpResponse.statusCode)")
                         request.complete(with: result)
                         return result
@@ -543,6 +559,7 @@ public class Iaptic {
                 }
                 
                 // If we get here, something unexpected happened with the response
+                print("[Iaptic] Unknown error occurred during validation") // Always print unknown errors
                 let result = ValidationResult(errorCode: "UnknownError", errorMessage: "Unknown error occurred during validation")
                 request.complete(with: result)
                 return result
@@ -553,10 +570,10 @@ public class Iaptic {
                 
                 if currentRetry < retryCount {
                     // Log and retry
-                    print("Network error: \(error.localizedDescription), retrying (\(currentRetry + 1)/\(retryCount))...")
+                    print("[Iaptic] Network error: \(error.localizedDescription), retrying (\(currentRetry + 1)/\(retryCount))...") // Always print network errors
                     currentRetry += 1
                     
-                    // Use exponential backoff for retries (1s, 2s, 4s, etc.)
+                    // Use exponential backoff for retries
                     let backoffDelay = retryDelay * pow(2.0, Double(currentRetry - 1))
                     try? await Task.sleep(nanoseconds: UInt64(backoffDelay * 1_000_000_000))
                 } else {
@@ -567,7 +584,7 @@ public class Iaptic {
         }
         
         // If we get here, we've exhausted our retries with errors
-        print("Error validating with iaptic after \(retryCount) retries: \(lastError?.localizedDescription ?? "Unknown error")")
+        print("[Iaptic] Error validating with iaptic after \(retryCount) retries: \(lastError?.localizedDescription ?? "Unknown error")") // Always print final errors
         let result = ValidationResult(errorCode: "RequestError", errorMessage: lastError?.localizedDescription ?? "Network request failed after multiple attempts")
         request.complete(with: result)
         return result

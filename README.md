@@ -12,6 +12,7 @@ The `Iaptic` is a Swift class that simplifies the validation of StoreKit 2 in-ap
 - Smart caching to improve performance
 - Thread-safe implementation
 - Automatic retry for network failures
+- Configurable logging verbosity
 
 ## Requirements
 
@@ -62,9 +63,12 @@ import Iaptic // If using SPM
 // Initialize the validator with your iaptic credentials
 let iaptic = Iaptic(
     appName: "your-app-name",
-    publicKey: "your-public-key"
+    publicKey: "your-public-key",
+    verbose: false // Optional: Set to true for detailed logging
 )
 ```
+
+By default, Iaptic only logs errors and important warnings. Enable verbose mode to see additional information about request progress, caching, and successful validations.
 
 ### Validating a Purchase
 
