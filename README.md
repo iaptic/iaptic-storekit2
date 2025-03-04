@@ -20,10 +20,33 @@ A lightweight, production-ready Swift package for validating StoreKit 2 in-app p
 
 ### Swift Package Manager
 
+#### Using Xcode
+
+1. In Xcode, select **File** > **Add Packages...**
+2. Enter the repository URL: `https://github.com/iaptic/iaptic-storekit2.git`
+3. Select **Up to Next Major Version** with **1.0.0** as the minimum version
+4. Click **Add Package**
+5. Select the target where you want to use the package
+
+#### Using Package.swift
+
+If you're developing a Swift package that depends on Iaptic, add it to your `Package.swift` file:
+
 ```swift
 dependencies: [
     .package(url: "https://github.com/iaptic/iaptic-storekit2.git", from: "1.0.0")
 ]
+```
+
+Then add the dependency to your target:
+
+```swift
+.target(
+    name: "YourTarget",
+    dependencies: [
+        .product(name: "Iaptic", package: "iaptic-storekit2")
+    ]
+)
 ```
 
 ### Quick Start
