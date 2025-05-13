@@ -127,12 +127,15 @@ Check out our [demo project](https://github.com/iaptic/iaptic-storekit2-demo) fo
 
 ## Documentation
 
-For detailed API documentation and implementation guides, visit [iaptic.com/documentation](https://iaptic.com/documentation).
+For detailed API documentation and implementation guides:
+
+- Visit [iaptic.com/documentation](https://iaptic.com/documentation/iaptic-storekit2).
+- Check the [API Documentation](https://www.iaptic.com/documentation/iaptic-storekit2-api)
 
 ## Support
 
 - Email: support@iaptic.com
-- Documentation: [iaptic.com/docs](https://iaptic.com/documentation)
+- Documentation: [iaptic.com/docs](https://iaptic.com/documentation/iaptic-storekit2)
 
 ## License
 
