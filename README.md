@@ -38,6 +38,8 @@ dependencies: [
 ]
 ```
 
+> **Note:** All `1.x.x` versions of Iaptic StoreKit 2 will maintain backward compatibility. You can safely use `from: "1.0.0"` to always get the latest compatible version in the 1.x series.
+
 Then add the dependency to your target:
 
 ```swift
