@@ -123,6 +123,23 @@ if let purchases = validationResult.purchases {
 }
 ```
 
+## Offer Code Redemption
+
+No change required. A transaction produced by Apple's offer-code redemption sheet is an ordinary StoreKit 2 transaction: send its `jwsRepresentation` to iaptic and it validates like any purchase. The offer-code reference lands in `discountId`, and `offerType` is `3`.
+
+The redemption sheet itself is a client concern — on iOS 27+ it is `AppStore.presentOfferCodeRedeemSheet(from:options:)`, which returns a `VerificationResult<Transaction>` (below iOS 27 it is the deprecated fire-and-forget sheet). Hand that result to the existing call, exactly as you do for a purchase:
+
+```swift
+// iOS 27+ only; below iOS 27 the sheet returns nothing.
+let result = try await AppStore.presentOfferCodeRedeemSheet(from: viewController)
+let validation = await iaptic.validate(
+    productId: productId,   // the product the redeemed code unlocks
+    verificationResult: result
+)
+```
+
+Offer codes work with consumable, non-consumable, auto-renewable and non-renewing-subscription products; redeeming one for a subscription behaves like a purchase of that subscription.
+
 ## Example Project
 
 Check out our [demo project](https://github.com/iaptic/iaptic-storekit2-demo) for a complete implementation example.
