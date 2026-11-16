@@ -139,6 +139,11 @@ do {
             verificationResult: result
         )
         // Grant entitlements from validation.
+    } else {
+        // .unverified(transaction, VerificationError): the JWS did not check out.
+        // The redemption may still have gone through on Apple's side — the
+        // transaction can surface later through Transaction.updates. Treat this
+        // as a validation failure, not as proof the code was unused.
     }
 } catch {
     // StoreKitError: .userCancelled, .networkError, .invalidPresentationContext, ...
