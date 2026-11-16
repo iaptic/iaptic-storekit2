@@ -130,12 +130,19 @@ No change required. A transaction produced by Apple's offer-code redemption shee
 The redemption sheet itself is a client concern — on iOS 27+ it is `AppStore.presentOfferCodeRedeemSheet(from:options:)`, which returns a `VerificationResult<Transaction>` (below iOS 27 it is the deprecated fire-and-forget sheet). Hand that result to the existing call, exactly as you do for a purchase:
 
 ```swift
-// iOS 27+ only; below iOS 27 the sheet returns nothing.
-let result = try await AppStore.presentOfferCodeRedeemSheet(from: viewController)
-let validation = await iaptic.validate(
-    productId: productId,   // the product the redeemed code unlocks
-    verificationResult: result
-)
+// Xcode 27.2 SDK: @available(iOS 27.0, macCatalyst 27.0, visionOS 27.0, *)
+do {
+    let result = try await AppStore.presentOfferCodeRedeemSheet(from: viewController)
+    if case .verified(let transaction) = result {
+        let validation = await iaptic.validate(
+            productId: transaction.productID,
+            verificationResult: result
+        )
+        // Grant entitlements from validation.
+    }
+} catch {
+    // StoreKitError: .userCancelled, .networkError, .invalidPresentationContext, ...
+}
 ```
 
 Offer codes work with consumable, non-consumable, auto-renewable and non-renewing-subscription products; redeeming one for a subscription behaves like a purchase of that subscription.
